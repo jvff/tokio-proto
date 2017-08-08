@@ -59,8 +59,9 @@ struct LineProto;
 impl<T: AsyncRead + AsyncWrite + 'static> ServerProto<T> for LineProto {
     type Request = String;
     type Response = String;
+    type Error = io::Error;
     type Transport = Framed<T, LineCodec>;
-    type BindTransport = Result<Self::Transport, io::Error>;
+    type BindTransport = Result<Self::Transport, Self::Error>;
 
     fn bind_transport(&self, io: T) -> Self::BindTransport {
         Ok(io.framed(LineCodec))

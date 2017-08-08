@@ -34,9 +34,10 @@ pub struct StreamingMultiplex<B>(B);
 /// Additional transport details relevant to streaming, multiplexed protocols.
 ///
 /// All methods added in this trait have default implementations.
-pub trait Transport<ReadBody>: 'static +
-    Stream<Error = io::Error> +
-    Sink<SinkError = io::Error>
+pub trait Transport<ReadBody>: 'static + Stream + Sink
+where
+    Self::Error: From<io::Error>,
+    Self::SinkError: From<io::Error>,
 {
     /// Allow the transport to do miscellaneous work (e.g., sending ping-pong
     /// messages) that is not directly connected to sending or receiving frames.
@@ -46,7 +47,7 @@ pub trait Transport<ReadBody>: 'static +
     fn tick(&mut self) {}
 
     /// Cancel interest in the exchange identified by RequestId
-    fn cancel(&mut self, request_id: RequestId) -> io::Result<()> {
+    fn cancel(&mut self, request_id: RequestId) -> Result<(), Self::Error> {
         drop(request_id);
         Ok(())
     }
@@ -73,6 +74,7 @@ impl<T, C, ReadBody> Transport<ReadBody> for old_io::Framed<T,C>
 
 impl<T, C, ReadBody> Transport<ReadBody> for new_io::codec::Framed<T,C>
     where T: new_io::AsyncRead + new_io::AsyncWrite + 'static,
-          C: new_io::codec::Encoder<Error=io::Error> +
-                new_io::codec::Decoder<Error=io::Error> + 'static,
+          C: new_io::codec::Encoder + new_io::codec::Decoder + 'static,
+          <C as new_io::codec::Encoder>::Error: From<io::Error>,
+          <C as new_io::codec::Decoder>::Error: From<io::Error>,
 {}

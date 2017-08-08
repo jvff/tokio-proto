@@ -67,16 +67,18 @@ pub trait Dispatch {
 
     /// Transport type
     type Transport: Transport<Item = Frame<Self::Out, Self::BodyOut, Self::Error>,
-                              SinkItem = Frame<Self::In, Self::BodyIn, Self::Error>>;
+                              Error = Self::Error,
+                              SinkItem = Frame<Self::In, Self::BodyIn, Self::Error>,
+                              SinkError = Self::Error>;
 
     /// Mutable reference to the transport
     fn transport(&mut self) -> &mut Self::Transport;
 
     /// Process an out message
-    fn dispatch(&mut self, message: PipelineMessage<Self::Out, Body<Self::BodyOut, Self::Error>, Self::Error>) -> io::Result<()>;
+    fn dispatch(&mut self, message: PipelineMessage<Self::Out, Body<Self::BodyOut, Self::Error>, Self::Error>) -> Result<(), Self::Error>;
 
     /// Poll the next completed message
-    fn poll(&mut self) -> Poll<Option<PipelineMessage<Self::In, Self::Stream, Self::Error>>, io::Error>;
+    fn poll(&mut self) -> Poll<Option<PipelineMessage<Self::In, Self::Stream, Self::Error>>, Self::Error>;
 
     /// RPC currently in flight
     /// TODO: Get rid of
@@ -114,7 +116,7 @@ impl<T> Pipeline<T> where T: Dispatch {
         (!self.transport_open || !self.request_sender_open) && self.is_flushed && !self.has_in_flight()
     }
 
-    fn read_out_frames(&mut self) -> io::Result<()> {
+    fn read_out_frames(&mut self) -> Result<(), T::Error> {
         while self.transport_open {
             // Return true if the pipeliner can process new outbound frames
             if !self.check_out_body_stream() {
@@ -142,7 +144,7 @@ impl<T> Pipeline<T> where T: Dispatch {
 
     fn process_out_frame(&mut self,
                          frame: Option<Frame<T::Out, T::BodyOut, T::Error>>)
-                         -> io::Result<()> {
+                         -> Result<(), T::Error> {
         trace!("process_out_frame");
         // At this point, the service & transport are ready to process the
         // frame, no matter what it is.
@@ -198,7 +200,7 @@ impl<T> Pipeline<T> where T: Dispatch {
                 // isn't much else that we can do. Killing the task
                 // will cause all in-flight requests to abort, but
                 // they can't be written to the transport anyway...
-                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "An error occurred."));
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "An error occurred.").into());
             }
         }
 
@@ -233,7 +235,7 @@ impl<T> Pipeline<T> where T: Dispatch {
         Ok(())
     }
 
-    fn write_in_frames(&mut self) -> io::Result<()> {
+    fn write_in_frames(&mut self) -> Result<(), T::Error> {
         trace!("write_in_frames");
         while self.dispatch.poll_ready().is_ready() {
             // Ensure the current in body is fully written
@@ -267,7 +269,7 @@ impl<T> Pipeline<T> where T: Dispatch {
         Ok(())
     }
 
-    fn write_in_message(&mut self, message: Result<Message<T::In, T::Stream>, T::Error>) -> io::Result<()> {
+    fn write_in_message(&mut self, message: Result<Message<T::In, T::Stream>, T::Error>) -> Result<(), T::Error> {
         trace!("write_in_message");
         match message {
             Ok(Message::WithoutBody(val)) => {
@@ -303,7 +305,7 @@ impl<T> Pipeline<T> where T: Dispatch {
     }
 
     // Returns true if the response body is fully written
-    fn write_in_body(&mut self) -> io::Result<bool> {
+    fn write_in_body(&mut self) -> Result<bool, T::Error> {
         trace!("write_in_body");
 
         if self.in_body.is_some() {
@@ -339,7 +341,7 @@ impl<T> Pipeline<T> where T: Dispatch {
         Ok(true)
     }
 
-    fn flush(&mut self) -> io::Result<()> {
+    fn flush(&mut self) -> Result<(), T::Error> {
         self.is_flushed = try!(self.dispatch.poll_complete()).is_ready();
 
         if let Some(ref mut out_body) = self.out_body {
@@ -362,10 +364,10 @@ impl<T> Pipeline<T> where T: Dispatch {
 
 impl<T> Future for Pipeline<T> where T: Dispatch {
     type Item = ();
-    type Error = io::Error;
+    type Error = T::Error;
 
     // Tick the pipeline state machine
-    fn poll(&mut self) -> Poll<(), io::Error> {
+    fn poll(&mut self) -> Poll<(), T::Error> {
         trace!("Pipeline::tick");
 
         // Always tick the transport first
@@ -424,19 +426,19 @@ impl<T> fmt::Debug for Pipeline<T>
 
 impl<T: Dispatch> Sink for DispatchSink<T> {
     type SinkItem = <T::Transport as Sink>::SinkItem;
-    type SinkError = io::Error;
+    type SinkError = <T::Transport as Sink>::SinkError;
 
     fn start_send(&mut self, item: Self::SinkItem)
-                  -> StartSend<Self::SinkItem, io::Error>
+                  -> StartSend<Self::SinkItem, Self::SinkError>
     {
         self.inner.transport().start_send(item)
     }
 
-    fn poll_complete(&mut self) -> Poll<(), io::Error> {
+    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
         self.inner.transport().poll_complete()
     }
 
-    fn close(&mut self) -> Poll<(), io::Error> {
+    fn close(&mut self) -> Poll<(), Self::SinkError> {
         self.inner.transport().close()
     }
 }

@@ -192,22 +192,24 @@ pub trait Dispatch {
     /// Transport type
     type Transport: Transport<Self::BodyOut,
                               Item = Frame<Self::Out, Self::BodyOut, Self::Error>,
-                              SinkItem = Frame<Self::In, Self::BodyIn, Self::Error>>;
+                              SinkItem = Frame<Self::In, Self::BodyIn, Self::Error>,
+                              Error = Self::Error,
+                              SinkError = Self::Error>;
 
     /// Mutable reference to the transport
     fn transport(&mut self) -> &mut Self::Transport;
 
     /// Poll the next available message
-    fn poll(&mut self) -> Poll<Option<MultiplexMessage<Self::In, Self::Stream, Self::Error>>, io::Error>;
+    fn poll(&mut self) -> Poll<Option<MultiplexMessage<Self::In, Self::Stream, Self::Error>>, Self::Error>;
 
     /// The `Dispatch` is ready to accept another message
     fn poll_ready(&self) -> Async<()>;
 
     /// Process an out message
-    fn dispatch(&mut self, message: MultiplexMessage<Self::Out, Body<Self::BodyOut, Self::Error>, Self::Error>) -> io::Result<()>;
+    fn dispatch(&mut self, message: MultiplexMessage<Self::Out, Body<Self::BodyOut, Self::Error>, Self::Error>) -> Result<(), Self::Error>;
 
     /// Cancel interest in the exchange identified by RequestId
-    fn cancel(&mut self, request_id: RequestId) -> io::Result<()>;
+    fn cancel(&mut self, request_id: RequestId) -> Result<(), Self::Error>;
 }
 
 /*
@@ -250,7 +252,7 @@ impl<T> Multiplex<T> where T: Dispatch {
     }
 
     /// Attempt to dispatch any outbound request messages
-    fn flush_dispatch_deque(&mut self) -> io::Result<()> {
+    fn flush_dispatch_deque(&mut self) -> Result<(), T::Error> {
         while self.dispatch.get_mut().inner.poll_ready().is_ready() {
             let id = match self.dispatch_deque.pop_front() {
                 Some(id) => id,
@@ -306,7 +308,7 @@ impl<T> Multiplex<T> where T: Dispatch {
     }
 
     /// Read and process frames from transport
-    fn read_out_frames(&mut self) -> io::Result<()> {
+    fn read_out_frames(&mut self) -> Result<(), T::Error> {
         while self.transport_open {
             // TODO: Only read frames if there is available space in the frame
             // buffer
@@ -323,7 +325,7 @@ impl<T> Multiplex<T> where T: Dispatch {
     /// Process outbound frame
     fn process_out_frame(&mut self,
                          frame: Option<Frame<T::Out, T::BodyOut, T::Error>>)
-                         -> io::Result<()> {
+                         -> Result<(), T::Error> {
         trace!("Multiplex::process_out_frame");
 
         match frame {
@@ -362,7 +364,7 @@ impl<T> Multiplex<T> where T: Dispatch {
                            message: Message<T::Out, Body<T::BodyOut, T::Error>>,
                            body: Option<mpsc::Sender<Result<T::BodyOut, T::Error>>>,
                            solo: bool)
-                           -> io::Result<()>
+                           -> Result<(), T::Error>
     {
         trace!("   --> process message; body={:?}", body.is_some());
 
@@ -450,7 +452,7 @@ impl<T> Multiplex<T> where T: Dispatch {
     }
 
     // Process an error
-    fn process_out_err(&mut self, id: RequestId, err: T::Error) -> io::Result<()> {
+    fn process_out_err(&mut self, id: RequestId, err: T::Error) -> Result<(), T::Error> {
         trace!("   --> process error frame");
 
         let mut remove = false;
@@ -524,13 +526,13 @@ impl<T> Multiplex<T> where T: Dispatch {
         self.exchanges.remove(&id);
     }
 
-    fn write_in_frames(&mut self) -> io::Result<()> {
+    fn write_in_frames(&mut self) -> Result<(), T::Error> {
         try!(self.write_in_messages());
         try!(self.write_in_body());
         Ok(())
     }
 
-    fn write_in_messages(&mut self) -> io::Result<()> {
+    fn write_in_messages(&mut self) -> Result<(), T::Error> {
         trace!("write in messages");
 
         while self.dispatch.poll_ready().is_ready() {
@@ -578,7 +580,7 @@ impl<T> Multiplex<T> where T: Dispatch {
                         id: RequestId,
                         message: Message<T::In, T::Stream>,
                         solo: bool)
-                        -> io::Result<()>
+                        -> Result<(), T::Error>
     {
         let (message, body) = match message {
             Message::WithBody(message, rx) => (message, Some(rx)),
@@ -637,7 +639,7 @@ impl<T> Multiplex<T> where T: Dispatch {
     fn write_in_error(&mut self,
                       id: RequestId,
                       error: T::Error)
-                      -> io::Result<()>
+                      -> Result<(), T::Error>
     {
         if let Entry::Occupied(mut e) = self.exchanges.entry(id) {
             assert!(!e.get().responded, "exchange already responded");
@@ -664,7 +666,7 @@ impl<T> Multiplex<T> where T: Dispatch {
         Ok(())
     }
 
-    fn write_in_body(&mut self) -> io::Result<()> {
+    fn write_in_body(&mut self) -> Result<(), T::Error> {
         trace!("write in body chunks");
 
         self.scratch.clear();
@@ -736,7 +738,7 @@ impl<T> Multiplex<T> where T: Dispatch {
         Ok(())
     }
 
-    fn flush(&mut self) -> io::Result<()> {
+    fn flush(&mut self) -> Result<(), T::Error> {
         self.is_flushed = try!(self.dispatch.poll_complete()).is_ready();
 
         // TODO: Technically, poll_complete needs to be called on the exchange body senders.
@@ -768,10 +770,10 @@ impl<T> Future for Multiplex<T>
     where T: Dispatch,
 {
     type Item = ();
-    type Error = io::Error;
+    type Error = T::Error;
 
     // Tick the pipeline state machine
-    fn poll(&mut self) -> Poll<(), io::Error> {
+    fn poll(&mut self) -> Poll<(), T::Error> {
         trace!("Multiplex::tick ~~~~~~~~~~~~~~~~~~~~~~~~~~~");
 
         // Always tick the transport first
@@ -1114,19 +1116,19 @@ impl<T, B, E> MultiplexMessage<T, B, E> {
 
 impl<T: Dispatch> Sink for DispatchSink<T> {
     type SinkItem = <T::Transport as Sink>::SinkItem;
-    type SinkError = io::Error;
+    type SinkError = <T::Transport as Sink>::SinkError;
 
     fn start_send(&mut self, item: Self::SinkItem)
-                  -> StartSend<Self::SinkItem, io::Error>
+                  -> StartSend<Self::SinkItem, Self::SinkError>
     {
         self.inner.transport().start_send(item)
     }
 
-    fn poll_complete(&mut self) -> Poll<(), io::Error> {
+    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
         self.inner.transport().poll_complete()
     }
 
-    fn close(&mut self) -> Poll<(), io::Error> {
+    fn close(&mut self) -> Poll<(), Self::SinkError> {
         self.inner.transport().close()
     }
 }

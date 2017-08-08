@@ -58,6 +58,7 @@ where
 {
     type Request = Vec<u8>;
     type Response = Vec<u8>;
+    type Error = io::Error;
     type Transport = Framed<T, DummyCodec>;
     type BindTransport = Result<Self::Transport, io::Error>;
 

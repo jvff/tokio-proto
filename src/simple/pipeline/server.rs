@@ -29,19 +29,22 @@ pub trait ServerProto<T: 'static>: 'static {
     /// Response messages.
     type Response: 'static;
 
+    /// Error type.
+    type Error: From<io::Error>;
+
     /// The message transport, which works with I/O objects of type `T`.
     ///
     /// An easy way to build a transport is to use `tokio_core::io::Framed`
     /// together with a `Codec`; in that case, the transport type is
     /// `Framed<T, YourCodec>`. See the crate docs for an example.
     type Transport: 'static +
-        Stream<Item = Self::Request, Error = io::Error> +
-        Sink<SinkItem = Self::Response, SinkError = io::Error>;
+        Stream<Item = Self::Request, Error = Self::Error> +
+        Sink<SinkItem = Self::Response, SinkError = Self::Error>;
 
     /// A future for initializing a transport from an I/O object.
     ///
     /// In simple cases, `Result<Self::Transport, Self::Error>` often suffices.
-    type BindTransport: IntoFuture<Item = Self::Transport, Error = io::Error>;
+    type BindTransport: IntoFuture<Item = Self::Transport, Error = Self::Error>;
 
     /// Build a transport from the given I/O object, using `self` for any
     /// configuration.
@@ -55,7 +58,7 @@ pub trait ServerProto<T: 'static>: 'static {
 impl<T: 'static, P: ServerProto<T>> BindServer<Pipeline, T> for P {
     type ServiceRequest = P::Request;
     type ServiceResponse = P::Response;
-    type ServiceError = io::Error;
+    type ServiceError = P::Error;
 
     fn bind_server<S, E>(&self, executor: &E, io: T, service: S)
         where S: Service<Request = Self::ServiceRequest,
@@ -63,7 +66,7 @@ impl<T: 'static, P: ServerProto<T>> BindServer<Pipeline, T> for P {
                          Error = Self::ServiceError> + 'static,
               E: Executor<Box<Future<Item = (), Error = ()>>>
     {
-        BindServer::<StreamingPipeline<MyStream<io::Error>>, T>::bind_server(
+        BindServer::<StreamingPipeline<MyStream<P::Error>>, T>::bind_server(
             LiftProto::from_ref(self), executor, io, LiftService(service)
         )
     }
@@ -78,10 +81,10 @@ impl<T, P> streaming::pipeline::ServerProto<T> for LiftProto<P> where
     type Response = P::Response;
     type ResponseBody = ();
 
-    type Error = io::Error;
+    type Error = P::Error;
 
-    type Transport = LiftTransport<P::Transport, io::Error>;
-    type BindTransport = LiftBind<T, <P::BindTransport as IntoFuture>::Future, io::Error>;
+    type Transport = LiftTransport<P::Transport, P::Error>;
+    type BindTransport = LiftBind<T, <P::BindTransport as IntoFuture>::Future, P::Error>;
 
     fn bind_transport(&self, io: T) -> Self::BindTransport {
         LiftBind::lift(ServerProto::bind_transport(self.lower(), io).into_future())
