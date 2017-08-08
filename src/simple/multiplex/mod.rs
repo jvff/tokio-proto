@@ -41,12 +41,13 @@ mod lift {
 
     impl<T, InnerItem, E> Stream for LiftTransport<T, E> where
         E: 'static,
-        T: Stream<Item = (RequestId, InnerItem), Error = io::Error>,
+        T: Stream<Item = (RequestId, InnerItem)>,
+        T::Error: From<io::Error>,
     {
         type Item = Frame<InnerItem, (), E>;
-        type Error = io::Error;
+        type Error = T::Error;
 
-        fn poll(&mut self) -> Poll<Option<Self::Item>, io::Error> {
+        fn poll(&mut self) -> Poll<Option<Self::Item>, T::Error> {
             let (id, msg) = match try_ready!(self.0.poll()) {
                 Some(msg) => msg,
                 None => return Ok(None.into()),
@@ -62,13 +63,14 @@ mod lift {
 
     impl<T, InnerSink, E> Sink for LiftTransport<T, E> where
         E: 'static,
-        T: Sink<SinkItem = (RequestId, InnerSink), SinkError = io::Error>
+        T: Sink<SinkItem = (RequestId, InnerSink)>,
+        T::SinkError: From<io::Error>,
     {
         type SinkItem = Frame<InnerSink, (), E>;
-        type SinkError = io::Error;
+        type SinkError = T::SinkError;
 
         fn start_send(&mut self, request: Self::SinkItem)
-                      -> StartSend<Self::SinkItem, io::Error> {
+                      -> StartSend<Self::SinkItem, T::SinkError> {
             if let Frame::Message { message, id, body, solo } = request {
                 if !body && !solo {
                     match try!(self.0.start_send((id, message))) {
@@ -85,23 +87,23 @@ mod lift {
                     }
                 }
             }
-            Err(io::Error::new(io::ErrorKind::Other, "no support for streaming"))
+            Err(io::Error::new(io::ErrorKind::Other, "no support for streaming").into())
         }
 
-        fn poll_complete(&mut self) -> Poll<(), io::Error> {
+        fn poll_complete(&mut self) -> Poll<(), T::SinkError> {
             self.0.poll_complete()
         }
 
-        fn close(&mut self) -> Poll<(), io::Error> {
+        fn close(&mut self) -> Poll<(), T::SinkError> {
             self.0.close()
         }
     }
 
     impl<T, InnerItem, InnerSink, E> Transport<()> for LiftTransport<T, E> where
-        E: 'static,
+        E: 'static + From<io::Error>,
         T: 'static,
-        T: Stream<Item = (RequestId, InnerItem), Error = io::Error>,
-        T: Sink<SinkItem = (RequestId, InnerSink), SinkError = io::Error>
+        T: Stream<Item = (RequestId, InnerItem), Error = E>,
+        T: Sink<SinkItem = (RequestId, InnerSink), SinkError = E>,
     {}
 
     impl<A, F, E> LiftBind<A, F, E> {
@@ -113,11 +115,14 @@ mod lift {
         }
     }
 
-    impl<A, F, E> Future for LiftBind<A, F, E> where F: Future<Error = io::Error> {
+    impl<A, F, E> Future for LiftBind<A, F, E> where
+        F: Future<Error = E>,
+        E: From<io::Error>,
+    {
         type Item = LiftTransport<F::Item, E>;
-        type Error = io::Error;
+        type Error = E;
 
-        fn poll(&mut self) -> Poll<Self::Item, io::Error> {
+        fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
             Ok(Async::Ready(LiftTransport(try_ready!(self.fut.poll()), PhantomData)))
         }
     }

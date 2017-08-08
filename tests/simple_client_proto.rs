@@ -84,6 +84,7 @@ pub struct IntProto;
 impl<T: AsyncRead + AsyncWrite + 'static> ClientProto<T> for IntProto {
     type Request = u64;
     type Response = u64;
+    type Error = io::Error;
     type Transport = Framed<T, IntCodec>;
     type BindTransport = Result<Self::Transport, io::Error>;
 

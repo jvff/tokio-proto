@@ -41,12 +41,14 @@ pub trait ServerProto<T: 'static>: 'static {
     /// The frame transport, which usually take `T` as a parameter.
     type Transport:
         Transport<Item = Frame<Self::Request, Self::RequestBody, Self::Error>,
-                  SinkItem = Frame<Self::Response, Self::ResponseBody, Self::Error>>;
+                  Error = Self::Error,
+                  SinkItem = Frame<Self::Response, Self::ResponseBody, Self::Error>,
+                  SinkError = Self::Error>;
 
     /// A future for initializing a transport from an I/O object.
     ///
     /// In simple cases, `Result<Self::Transport, Self::Error>` often suffices.
-    type BindTransport: IntoFuture<Item = Self::Transport, Error = io::Error>;
+    type BindTransport: IntoFuture<Item = Self::Transport, Error = Self::Error>;
 
     /// Build a transport from the given I/O object, using `self` for any
     /// configuration.
@@ -120,7 +122,7 @@ impl<P, T, B, S> super::advanced::Dispatch for Dispatch<S, T, P> where
 
     fn dispatch(&mut self,
                 request: PipelineMessage<Self::Out, Body<Self::BodyOut, Self::Error>, Self::Error>)
-                -> io::Result<()>
+                -> Result<(), Self::Error>
     {
         if let Ok(request) = request {
             let response = self.service.call(request);
@@ -132,7 +134,7 @@ impl<P, T, B, S> super::advanced::Dispatch for Dispatch<S, T, P> where
         Ok(())
     }
 
-    fn poll(&mut self) -> Poll<Option<PipelineMessage<Self::In, Self::Stream, Self::Error>>, io::Error> {
+    fn poll(&mut self) -> Poll<Option<PipelineMessage<Self::In, Self::Stream, Self::Error>>, Self::Error> {
         for slot in self.in_flight.iter_mut() {
             slot.poll();
         }

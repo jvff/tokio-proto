@@ -36,12 +36,14 @@ pub trait ClientProto<T: 'static>: 'static {
     /// The frame transport, which usually take `T` as a parameter.
     type Transport:
         Transport<Item = Frame<Self::Response, Self::ResponseBody, Self::Error>,
-                  SinkItem = Frame<Self::Request, Self::RequestBody, Self::Error>>;
+                  Error = Self::Error,
+                  SinkItem = Frame<Self::Request, Self::RequestBody, Self::Error>,
+                  SinkError = Self::Error>;
 
     /// A future for initializing a transport from an I/O object.
     ///
     /// In simple cases, `Result<Self::Transport, Self::Error>` often suffices.
-    type BindTransport: IntoFuture<Item = Self::Transport, Error = io::Error>;
+    type BindTransport: IntoFuture<Item = Self::Transport, Error = Self::Error>;
 
     /// Build a transport from the given I/O object, using `self` for any
     /// configuration.
@@ -71,9 +73,9 @@ impl<P, T, B> BindClient<StreamingPipeline<B>, T> for P where
                 in_flight: VecDeque::with_capacity(32),
             };
             Pipeline::new(dispatch)
-        }).map_err(|e| {
+        }).map_err(|_| {
             // TODO: where to punt this error to?
-            error!("pipeline error: {}", e);
+            error!("pipeline error");
         });
 
         // Spawn the task
@@ -114,19 +116,19 @@ impl<P, T, B> super::advanced::Dispatch for Dispatch<P, T, B> where
 
     fn dispatch(&mut self,
                 response: PipelineMessage<Self::Out, Body<Self::BodyOut, Self::Error>, Self::Error>)
-                -> io::Result<()>
+                -> Result<(), Self::Error>
     {
         if let Some(complete) = self.in_flight.pop_front() {
             drop(complete.send(response));
         } else {
-            return Err(io::Error::new(io::ErrorKind::Other, "request / response mismatch"));
+            return Err(io::Error::new(io::ErrorKind::Other, "request / response mismatch").into());
         }
 
         Ok(())
     }
 
     fn poll(&mut self) -> Poll<Option<PipelineMessage<Self::In, Self::Stream, Self::Error>>,
-                               io::Error>
+                               Self::Error>
     {
         trace!("Dispatch::poll");
         // Try to get a new request frame

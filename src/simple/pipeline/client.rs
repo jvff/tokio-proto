@@ -27,19 +27,22 @@ pub trait ClientProto<T: 'static>: 'static {
     /// Response messages.
     type Response: 'static;
 
+    /// Error type.
+    type Error: From<io::Error>;
+
     /// The message transport, which works with I/O objects of type `T`.
     ///
     /// An easy way to build a transport is to use `tokio_core::io::Framed`
     /// together with a `Codec`; in that case, the transport type is
     /// `Framed<T, YourCodec>`. See the crate docs for an example.
     type Transport: 'static +
-        Stream<Item = Self::Response, Error = io::Error> +
-        Sink<SinkItem = Self::Request, SinkError = io::Error>;
+        Stream<Item = Self::Response, Error = Self::Error> +
+        Sink<SinkItem = Self::Request, SinkError = Self::Error>;
 
     /// A future for initializing a transport from an I/O object.
     ///
     /// In simple cases, `Result<Self::Transport, Self::Error>` often suffices.
-    type BindTransport: IntoFuture<Item = Self::Transport, Error = io::Error>;
+    type BindTransport: IntoFuture<Item = Self::Transport, Error = Self::Error>;
 
     /// Build a transport from the given I/O object, using `self` for any
     /// configuration.
@@ -53,7 +56,7 @@ pub trait ClientProto<T: 'static>: 'static {
 impl<T: 'static, P: ClientProto<T>> BindClient<Pipeline, T> for P {
     type ServiceRequest = P::Request;
     type ServiceResponse = P::Response;
-    type ServiceError = io::Error;
+    type ServiceError = P::Error;
 
     type BindClient = ClientService<T, P>;
 
@@ -61,7 +64,7 @@ impl<T: 'static, P: ClientProto<T>> BindClient<Pipeline, T> for P {
         where E: Executor<Box<Future<Item = (), Error = ()>>>,
     {
         ClientService {
-            inner: BindClient::<StreamingPipeline<MyStream<io::Error>>, T>::bind_client(
+            inner: BindClient::<StreamingPipeline<MyStream<P::Error>>, T>::bind_client(
                 LiftProto::from_ref(self), executor, io
             )
         }
@@ -77,10 +80,10 @@ impl<T, P> streaming::pipeline::ClientProto<T> for LiftProto<P> where
     type Response = P::Response;
     type ResponseBody = ();
 
-    type Error = io::Error;
+    type Error = P::Error;
 
-    type Transport = LiftTransport<P::Transport, io::Error>;
-    type BindTransport = LiftBind<T, <P::BindTransport as IntoFuture>::Future, io::Error>;
+    type Transport = LiftTransport<P::Transport, P::Error>;
+    type BindTransport = LiftBind<T, <P::BindTransport as IntoFuture>::Future, P::Error>;
 
     fn bind_transport(&self, io: T) -> Self::BindTransport {
         LiftBind::lift(ClientProto::bind_transport(self.lower(), io).into_future())
@@ -89,7 +92,7 @@ impl<T, P> streaming::pipeline::ClientProto<T> for LiftProto<P> where
 
 /// Client `Service` for simple pipeline protocols
 pub struct ClientService<T, P> where T: 'static, P: ClientProto<T> {
-    inner: <LiftProto<P> as BindClient<StreamingPipeline<MyStream<io::Error>>, T>>::BindClient
+    inner: <LiftProto<P> as BindClient<StreamingPipeline<MyStream<P::Error>>, T>>::BindClient
 }
 
 impl<T, P> Clone for ClientService<T, P> where T: 'static, P: ClientProto<T> {
@@ -103,7 +106,7 @@ impl<T, P> Clone for ClientService<T, P> where T: 'static, P: ClientProto<T> {
 impl<T, P> Service for ClientService<T, P> where T: 'static, P: ClientProto<T> {
     type Request = P::Request;
     type Response = P::Response;
-    type Error = io::Error;
+    type Error = P::Error;
     type Future = ClientFuture<T, P>;
 
     fn call(&self, req: P::Request) -> Self::Future {
@@ -126,13 +129,13 @@ impl<T, P> fmt::Debug for ClientService<T, P>
 ///
 /// [`ClientService`]: struct.ClientService.html
 pub struct ClientFuture<T, P> where T: 'static, P: ClientProto<T> {
-    inner: <<LiftProto<P> as BindClient<StreamingPipeline<MyStream<io::Error>>, T>>::BindClient
+    inner: <<LiftProto<P> as BindClient<StreamingPipeline<MyStream<P::Error>>, T>>::BindClient
             as Service>::Future
 }
 
 impl<T, P> Future for ClientFuture<T, P> where P: ClientProto<T> {
     type Item = P::Response;
-    type Error = io::Error;
+    type Error = P::Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match try_ready!(self.inner.poll()) {

@@ -7,6 +7,7 @@ use util::client_proxy::{self, ClientProxy, Receiver};
 use futures::{Future, IntoFuture, Poll, Async, Stream};
 use futures::sync::oneshot;
 use futures::future::Executor;
+use std::fmt::Debug;
 use std::io;
 use std::collections::HashMap;
 
@@ -32,18 +33,20 @@ pub trait ClientProto<T: 'static>: 'static {
     type ResponseBody: 'static;
 
     /// Errors, which are used both for error frames and for the service itself.
-    type Error: From<io::Error> + 'static;
+    type Error: Debug + From<io::Error> + 'static;
 
     /// The frame transport, which usually take `T` as a parameter.
     type Transport:
         Transport<Self::ResponseBody,
                   Item = Frame<Self::Response, Self::ResponseBody, Self::Error>,
-                  SinkItem = Frame<Self::Request, Self::RequestBody, Self::Error>>;
+                  SinkItem = Frame<Self::Request, Self::RequestBody, Self::Error>,
+                  Error = Self::Error,
+                  SinkError = Self::Error>;
 
     /// A future for initializing a transport from an I/O object.
     ///
     /// In simple cases, `Result<Self::Transport, Self::Error>` often suffices.
-    type BindTransport: IntoFuture<Item = Self::Transport, Error = io::Error>;
+    type BindTransport: IntoFuture<Item = Self::Transport, Error = Self::Error>;
 
     /// Build a transport from the given I/O object, using `self` for any
     /// configuration.
@@ -73,7 +76,7 @@ impl<P, T, B> BindClient<StreamingMultiplex<B>, T> for P where
                 in_flight: HashMap::new(),
                 next_request_id: 0,
             };
-            Multiplex::new(dispatch)
+            Multiplex::new(dispatch).map_err(|error| error.into())
         }).map_err(|e| {
             // TODO: where to punt this error to?
             debug!("multiplex task failed with error; err={:?}", e);
@@ -117,7 +120,7 @@ impl<P, T, B> super::advanced::Dispatch for Dispatch<P, T, B> where
         &mut self.transport
     }
 
-    fn dispatch(&mut self, message: MultiplexMessage<Self::Out, Body<Self::BodyOut, Self::Error>, Self::Error>) -> io::Result<()> {
+    fn dispatch(&mut self, message: MultiplexMessage<Self::Out, Body<Self::BodyOut, Self::Error>, Self::Error>) -> Result<(), Self::Error> {
         let MultiplexMessage { id, message, solo } = message;
 
         assert!(!solo);
@@ -125,13 +128,13 @@ impl<P, T, B> super::advanced::Dispatch for Dispatch<P, T, B> where
         if let Some(complete) = self.in_flight.remove(&id) {
             drop(complete.send(message));
         } else {
-            return Err(io::Error::new(io::ErrorKind::Other, "request / response mismatch"));
+            return Err(io::Error::new(io::ErrorKind::Other, "request / response mismatch").into());
         }
 
         Ok(())
     }
 
-    fn poll(&mut self) -> Poll<Option<MultiplexMessage<Self::In, B, Self::Error>>, io::Error> {
+    fn poll(&mut self) -> Poll<Option<MultiplexMessage<Self::In, B, Self::Error>>, Self::Error> {
         trace!("Dispatch::poll");
         // Try to get a new request frame
         match self.requests.poll() {
@@ -173,7 +176,7 @@ impl<P, T, B> super::advanced::Dispatch for Dispatch<P, T, B> where
         Async::Ready(())
     }
 
-    fn cancel(&mut self, _request_id: RequestId) -> io::Result<()> {
+    fn cancel(&mut self, _request_id: RequestId) -> Result<(), Self::Error> {
         // TODO: implement
         Ok(())
     }

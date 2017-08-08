@@ -139,8 +139,9 @@
 //! impl<T: Io + 'static> ServerProto<T> for IntProto {
 //!     type Request = u64;
 //!     type Response = u64;
+//!     type Error = io::Error;
 //!     type Transport = Framed<T, IntCodec>;
-//!     type BindTransport = Result<Self::Transport, io::Error>;
+//!     type BindTransport = Result<Self::Transport, Self::Error>;
 //!
 //!     fn bind_transport(&self, io: T) -> Self::BindTransport {
 //!         Ok(io.framed(IntCodec))

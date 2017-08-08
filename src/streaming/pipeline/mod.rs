@@ -28,9 +28,7 @@ pub struct StreamingPipeline<B>(B);
 /// Additional transport details relevant to streaming, pipelined protocols.
 ///
 /// All methods added in this trait have default implementations.
-pub trait Transport: 'static +
-    Stream<Error = io::Error> +
-    Sink<SinkError = io::Error>
+pub trait Transport: 'static + Stream + Sink
 {
     /// Allow the transport to do miscellaneous work (e.g., sending ping-pong
     /// messages) that is not directly connected to sending or receiving frames.
@@ -40,7 +38,7 @@ pub trait Transport: 'static +
     fn tick(&mut self) {}
 
     /// Cancel interest in the current stream
-    fn cancel(&mut self) -> io::Result<()> {
+    fn cancel(&mut self) -> Result<(), Self::Error> {
         Ok(())
     }
 }
