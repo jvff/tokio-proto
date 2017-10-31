@@ -41,8 +41,11 @@ const MAX_BUFFERED_FRAMES: usize = 128;
 /// and servers. Used internally by `multiplex::Client` and
 /// `multiplex::Server`.
 pub struct Multiplex<T> where T: Dispatch {
-    // True as long as the connection has more request frames to read.
-    run: bool,
+    // True as long as the transport `T` hasn't completed.
+    transport_open: bool,
+
+    // True as long as the channel of incoming requests is open.
+    request_sender_open: bool,
 
     // Used to track if any operations make progress
     made_progress: bool,
@@ -83,7 +86,8 @@ impl<T> fmt::Debug for Multiplex<T>
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Multiplex")
-            .field("run", &self.run)
+            .field("transport_open", &self.transport_open)
+            .field("request_sender_open", &self.request_sender_open)
             .field("made_progress", &self.made_progress)
             .field("blocked_on_dispatch", &self.blocked_on_dispatch)
             .field("dispatch", &self.dispatch)
@@ -225,7 +229,8 @@ impl<T> Multiplex<T> where T: Dispatch {
         let frame_buf = FrameBuf::with_capacity(MAX_BUFFERED_FRAMES);
 
         Multiplex {
-            run: true,
+            transport_open: true,
+            request_sender_open: true,
             made_progress: false,
             blocked_on_dispatch: false,
             blocked_on_flush: WriteState::NoWrite,
@@ -240,7 +245,8 @@ impl<T> Multiplex<T> where T: Dispatch {
 
     /// Returns true if the multiplexer has nothing left to do
     fn is_done(&self) -> bool {
-        !self.run && self.is_flushed && self.exchanges.len() == 0
+        (!self.transport_open || !self.request_sender_open)
+            && self.is_flushed && self.exchanges.len() == 0
     }
 
     /// Attempt to dispatch any outbound request messages
@@ -301,7 +307,7 @@ impl<T> Multiplex<T> where T: Dispatch {
 
     /// Read and process frames from transport
     fn read_out_frames(&mut self) -> io::Result<()> {
-        while self.run {
+        while self.transport_open {
             // TODO: Only read frames if there is available space in the frame
             // buffer
             if let Async::Ready(frame) = try!(self.dispatch.get_mut().inner.transport().poll()) {
@@ -343,7 +349,7 @@ impl<T> Multiplex<T> where T: Dispatch {
             None => {
                 trace!("read None");
                 // TODO: Ensure all bodies have been completed
-                self.run = false;
+                self.transport_open = false;
             }
         }
 
@@ -554,8 +560,7 @@ impl<T> Multiplex<T> where T: Dispatch {
                     //
                     // However, the `Done` frame should only be written once
                     // all the in-flight bodies have been written.
-                    //
-                    // For now, do nothing...
+                    self.request_sender_open = false;
                     break;
                 }
                 // Nothing to dispatch
